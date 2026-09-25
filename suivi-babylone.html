@@ -1,0 +1,305 @@
+<div id="babylone-root"></div>
+<style>
+  #babylone-root {
+    --ink: #1c1712;
+    --parchment: #f2e9d8;
+    --parchment-dim: #e8dcc2;
+    --lapis: #1c3d5a;
+    --lapis-deep: #12283d;
+    --gold: #b6862c;
+    --gold-bright: #d4a13d;
+    --green: #3f6b4a;
+    --red: #a34432;
+    --line: #cdbd97;
+    font-family: 'Iowan Old Style', 'Georgia', serif;
+    color: var(--ink);
+    background: var(--parchment);
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(182,134,44,0.06), transparent 40%),
+      radial-gradient(circle at 90% 80%, rgba(28,61,90,0.05), transparent 45%);
+    padding: 28px 24px 40px;
+    border-radius: 6px;
+    max-width: 900px;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+  #babylone-root * { box-sizing: border-box; }
+  #babylone-root .num { font-family: 'IBM Plex Mono', 'Menlo', monospace; font-variant-numeric: tabular-nums; }
+
+  #babylone-root .masthead {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    border-bottom: 3px double var(--lapis);
+    padding-bottom: 14px; margin-bottom: 22px;
+  }
+  #babylone-root .masthead h1 {
+    font-size: 27px; margin: 0; color: var(--lapis-deep); font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+  #babylone-root .masthead .sub { font-size: 13px; color: #5a4f3d; margin-top: 4px; font-style: italic; }
+  #babylone-root .masthead .week-badge {
+    background: var(--lapis); color: var(--gold-bright); font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px; padding: 6px 12px; border-radius: 3px; white-space: nowrap;
+  }
+
+  #babylone-root .cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 26px;
+  }
+  #babylone-root .card {
+    background: #fffdf7; border: 1px solid var(--line); border-radius: 4px;
+    padding: 14px 16px; position: relative;
+  }
+  #babylone-root .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: #8a7a5a; }
+  #babylone-root .card .value { font-size: 22px; font-weight: 700; color: var(--lapis-deep); margin-top: 4px; }
+  #babylone-root .card .value.gold { color: var(--gold); }
+
+  #babylone-root .layout { display: grid; grid-template-columns: 300px 1fr; gap: 22px; }
+  @media (max-width: 700px) { #babylone-root .layout { grid-template-columns: 1fr; } }
+
+  #babylone-root .panel {
+    background: #fffdf7; border: 1px solid var(--line); border-radius: 4px; padding: 18px;
+  }
+  #babylone-root .panel h2 {
+    font-size: 15px; margin: 0 0 14px; color: var(--lapis-deep);
+    border-bottom: 1px solid var(--line); padding-bottom: 8px;
+  }
+  #babylone-root label { display: block; font-size: 12px; color: #5a4f3d; margin: 10px 0 4px; }
+  #babylone-root input, #babylone-root select, #babylone-root textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px;
+    font-family: inherit; font-size: 14px; background: #fffef9; color: var(--ink);
+  }
+  #babylone-root textarea { resize: vertical; min-height: 44px; }
+  #babylone-root button.primary {
+    margin-top: 16px; width: 100%; background: var(--lapis); color: #fdf6e3;
+    border: none; padding: 10px; border-radius: 3px; font-size: 14px; cursor: pointer;
+    font-family: inherit; letter-spacing: 0.3px;
+  }
+  #babylone-root button.primary:hover { background: var(--lapis-deep); }
+  #babylone-root button.ghost {
+    background: none; border: 1px solid var(--line); color: #7a6a4d; padding: 4px 8px;
+    font-size: 12px; border-radius: 3px; cursor: pointer;
+  }
+
+  #babylone-root table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #babylone-root th { text-align: left; font-size: 11px; text-transform: uppercase; color: #8a7a5a;
+    border-bottom: 1px solid var(--line); padding: 6px 8px; }
+  #babylone-root td { padding: 7px 8px; border-bottom: 1px solid #e5d9bd; }
+  #babylone-root tr:last-child td { border-bottom: none; }
+
+  #babylone-root .alloc-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  #babylone-root .alloc-name { width: 52px; font-size: 12px; font-weight: 700; color: var(--lapis-deep); }
+  #babylone-root .alloc-bar-bg { flex: 1; height: 10px; background: var(--parchment-dim); border-radius: 5px; overflow: hidden; }
+  #babylone-root .alloc-bar-fill { height: 100%; background: linear-gradient(90deg, var(--gold), var(--gold-bright)); }
+  #babylone-root .alloc-pct { width: 44px; text-align: right; font-size: 12px; }
+
+  #babylone-root .empty { color: #8a7a5a; font-size: 13px; font-style: italic; padding: 10px 0; }
+  #babylone-root .footnote { font-size: 11px; color: #8a7a5a; margin-top: 18px; line-height: 1.5; }
+</style>
+
+<script>
+(function() {
+  const root = document.getElementById('babylone-root');
+
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'BNB', 'Autre'];
+  const STORAGE_KEY = 'babylone-dca-entries';
+
+  root.innerHTML = `
+    <div class="masthead">
+      <div>
+        <h1>Le Grenier — suivi d'épargne crypto</h1>
+        <div class="sub">Se payer d'abord, une semaine à la fois</div>
+      </div>
+      <div class="week-badge" id="bab-week-badge">—</div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="label">Total investi (cumul)</div><div class="value num" id="bab-total-invested">0,00 €</div></div>
+      <div class="card"><div class="label">Semaines suivies</div><div class="value num" id="bab-week-count">0</div></div>
+      <div class="card"><div class="label">Dernier achat</div><div class="value gold" id="bab-last-buy">—</div></div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Ajouter l'achat du jour</h2>
+        <label>Date</label>
+        <input type="date" id="bab-date">
+        <label>Actif</label>
+        <select id="bab-asset">
+          ${ASSETS.map(a => `<option value="${a}">${a}</option>`).join('')}
+        </select>
+        <div id="bab-custom-wrap" style="display:none">
+          <label>Nom de l'actif</label>
+          <input type="text" id="bab-custom-asset" placeholder="ex: XRP">
+        </div>
+        <label>Montant investi (€)</label>
+        <input type="number" step="0.01" id="bab-amount" placeholder="ex: 10.00">
+        <label>Quantité achetée</label>
+        <input type="number" step="any" id="bab-qty" placeholder="ex: 0.00015">
+        <label>Note (optionnel)</label>
+        <textarea id="bab-note" placeholder="ex: repli du marché, opportunité repérée..."></textarea>
+        <button class="primary" id="bab-add-btn">Enregistrer l'achat</button>
+      </div>
+
+      <div class="panel">
+        <h2>Répartition par actif</h2>
+        <div id="bab-alloc"></div>
+
+        <h2 style="margin-top:22px">Historique</h2>
+        <div id="bab-history"></div>
+      </div>
+    </div>
+
+    <div class="footnote">
+      Cet outil garde uniquement la trace de tes achats (montant, quantité, prix moyen) pour t'aider à suivre ta discipline d'épargne. Il ne donne pas de conseil d'investissement, ne se connecte à aucun compte Binance et n'exécute aucun ordre — l'exécution et la décision restent entièrement les tiennes.
+    </div>
+  `;
+
+  const $ = (sel) => root.querySelector(sel);
+  const dateInput = $('#bab-date');
+  const assetSelect = $('#bab-asset');
+  const customWrap = $('#bab-custom-wrap');
+  const customAsset = $('#bab-custom-asset');
+  const amountInput = $('#bab-amount');
+  const qtyInput = $('#bab-qty');
+  const noteInput = $('#bab-note');
+
+  dateInput.value = new Date().toISOString().slice(0, 10);
+
+  function isoWeek(d) {
+    const date = new Date(d.getTime());
+    date.setHours(0,0,0,0);
+    date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
+    const week1 = new Date(date.getFullYear(), 0, 4);
+    return 1 + Math.round(((date - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
+  }
+  const now = new Date();
+  $('#bab-week-badge').textContent = `Semaine ${isoWeek(now)} · ${now.getFullYear()}`;
+
+  assetSelect.addEventListener('change', () => {
+    customWrap.style.display = assetSelect.value === 'Autre' ? 'block' : 'none';
+  });
+
+  let entries = [];
+
+  async function loadEntries() {
+    try {
+      const res = await window.storage.get(STORAGE_KEY, false);
+      entries = res && res.value ? JSON.parse(res.value) : [];
+    } catch (e) {
+      entries = [];
+    }
+    render();
+  }
+
+  async function saveEntries() {
+    try {
+      await window.storage.set(STORAGE_KEY, JSON.stringify(entries), false);
+    } catch (e) {
+      console.error('Erreur de sauvegarde', e);
+    }
+  }
+
+  function fmtEUR(n) {
+    return n.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+  }
+
+  function render() {
+    // cards
+    const totalInvested = entries.reduce((s, e) => s + e.amount, 0);
+    $('#bab-total-invested').textContent = fmtEUR(totalInvested);
+    $('#bab-week-count').textContent = entries.length;
+    if (entries.length) {
+      const last = [...entries].sort((a,b) => b.date.localeCompare(a.date))[0];
+      $('#bab-last-buy').textContent = `${last.asset} · ${last.date}`;
+    } else {
+      $('#bab-last-buy').textContent = '—';
+    }
+
+    // allocation
+    const byAsset = {};
+    entries.forEach(e => {
+      if (!byAsset[e.asset]) byAsset[e.asset] = { amount: 0, qty: 0 };
+      byAsset[e.asset].amount += e.amount;
+      byAsset[e.asset].qty += e.qty;
+    });
+    const allocDiv = $('#bab-alloc');
+    const assetList = Object.keys(byAsset);
+    if (!assetList.length) {
+      allocDiv.innerHTML = '<div class="empty">Aucun achat enregistré pour l\'instant.</div>';
+    } else {
+      allocDiv.innerHTML = assetList.map(a => {
+        const pct = totalInvested ? (byAsset[a].amount / totalInvested * 100) : 0;
+        return `<div class="alloc-row">
+          <div class="alloc-name">${a}</div>
+          <div class="alloc-bar-bg"><div class="alloc-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+          <div class="alloc-pct num">${pct.toFixed(1)}%</div>
+        </div>`;
+      }).join('');
+    }
+
+    // history table with weighted avg price per asset shown inline
+    const histDiv = $('#bab-history');
+    if (!entries.length) {
+      histDiv.innerHTML = '<div class="empty">Ton premier achat apparaîtra ici.</div>';
+    } else {
+      const sorted = [...entries].sort((a,b) => b.date.localeCompare(a.date));
+      histDiv.innerHTML = `
+        <table>
+          <thead><tr><th>Date</th><th>Actif</th><th>Montant</th><th>Quantité</th><th>Prix payé</th><th></th></tr></thead>
+          <tbody>
+            ${sorted.map(e => `
+              <tr>
+                <td>${e.date}</td>
+                <td>${e.asset}</td>
+                <td class="num">${fmtEUR(e.amount)}</td>
+                <td class="num">${e.qty}</td>
+                <td class="num">${e.qty ? fmtEUR(e.amount / e.qty) : '—'}</td>
+                <td><button class="ghost" data-id="${e.id}">Suppr.</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        <div style="margin-top:14px">
+          ${assetList.map(a => {
+            const avg = byAsset[a].qty ? byAsset[a].amount / byAsset[a].qty : 0;
+            return `<div style="font-size:12px;color:#5a4f3d;margin-top:4px">
+              <strong>${a}</strong> — prix moyen pondéré: <span class="num">${fmtEUR(avg)}</span>, quantité totale: <span class="num">${byAsset[a].qty}</span>
+            </div>`;
+          }).join('')}
+        </div>
+      `;
+      histDiv.querySelectorAll('button[data-id]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          entries = entries.filter(e => e.id !== btn.getAttribute('data-id'));
+          await saveEntries();
+          render();
+        });
+      });
+    }
+  }
+
+  $('#bab-add-btn').addEventListener('click', async () => {
+    const asset = assetSelect.value === 'Autre' ? (customAsset.value.trim().toUpperCase() || 'AUTRE') : assetSelect.value;
+    const amount = parseFloat(amountInput.value);
+    const qty = parseFloat(qtyInput.value);
+    if (!dateInput.value || isNaN(amount) || isNaN(qty) || amount <= 0 || qty <= 0) {
+      alert('Merci de renseigner une date, un montant et une quantité valides.');
+      return;
+    }
+    entries.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      date: dateInput.value,
+      asset,
+      amount,
+      qty,
+      note: noteInput.value.trim()
+    });
+    await saveEntries();
+    amountInput.value = '';
+    qtyInput.value = '';
+    noteInput.value = '';
+    render();
+  });
+
+  loadEntries();
+})();
+</script>

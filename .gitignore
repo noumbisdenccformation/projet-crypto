@@ -1,0 +1,11 @@
+.env
+*.key
+*.pem
+wallet*
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.log
+*.zip
+.~lock*
