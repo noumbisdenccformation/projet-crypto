@@ -15,7 +15,10 @@ concurrency:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-latest
+    # Exécuté sur TA machine (runner auto-hébergé), pas sur le cloud de GitHub :
+    # Binance bloque les adresses IP des datacenters cloud (AWS/Azure/GCP),
+    # y compris celles utilisées par les runners gratuits de GitHub.
+    runs-on: self-hosted
     steps:
       - name: Checkout du dépôt
         uses: actions/checkout@v4
