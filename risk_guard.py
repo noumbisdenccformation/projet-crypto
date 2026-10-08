@@ -10,6 +10,8 @@ Objectif : rendre impossible, par construction, de reproduire le scénario
 
 Rien ici ne se connecte au réseau. Il est volontairement séparé pour que tu
 puisses le relire et l'ajuster sans toucher à la logique de chaque stratégie.
+
+Montants exprimés dans la devise de cotation du bot (USDT par défaut).
 """
 
 from dataclasses import dataclass
@@ -49,9 +51,9 @@ class RiskGuard:
     `guard.check_order(...)` avant d'envoyer un ordre à l'exchange.
     """
 
-    def __init__(self, config: RiskConfig, starting_capital_eur: float):
+    def __init__(self, config: RiskConfig, starting_capital: float):
         self.config = config
-        self.starting_capital_eur = starting_capital_eur
+        self.starting_capital = starting_capital
         self.state = self._load_state()
 
     # ---- Persistance simple sur disque (pas de base de données requise) ----
@@ -62,7 +64,7 @@ class RiskGuard:
                 return json.load(f)
         return {
             "week_start": datetime.utcnow().isoformat(),
-            "week_pnl_eur": 0.0,
+            "week_pnl": 0.0,
             "circuit_breaker_active": False,
         }
 
@@ -74,30 +76,30 @@ class RiskGuard:
         week_start = datetime.fromisoformat(self.state["week_start"])
         if datetime.utcnow() - week_start >= timedelta(days=7):
             self.state["week_start"] = datetime.utcnow().isoformat()
-            self.state["week_pnl_eur"] = 0.0
+            self.state["week_pnl"] = 0.0
             self.state["circuit_breaker_active"] = False
             self._save_state()
 
     # ---- API utilisée par les stratégies ----
 
-    def record_trade_result(self, pnl_eur: float):
+    def record_trade_result(self, pnl: float):
         """À appeler après chaque trade clôturé (gagnant ou perdant)."""
         self._maybe_reset_week()
-        self.state["week_pnl_eur"] += pnl_eur
-        loss_limit = -abs(self.config.weekly_stop_loss_pct * self.starting_capital_eur)
-        if self.state["week_pnl_eur"] <= loss_limit:
+        self.state["week_pnl"] += pnl
+        loss_limit = -abs(self.config.weekly_stop_loss_pct * self.starting_capital)
+        if self.state["week_pnl"] <= loss_limit:
             self.state["circuit_breaker_active"] = True
         self._save_state()
 
-    def max_order_size_eur(self) -> float:
-        """Taille maximale autorisée pour un ordre, en euros."""
-        return self.config.max_risk_per_trade_pct * self.starting_capital_eur
+    def max_order_size(self) -> float:
+        """Taille maximale autorisée pour un ordre, dans la devise de cotation."""
+        return self.config.max_risk_per_trade_pct * self.starting_capital
 
-    def reserve_floor_eur(self) -> float:
+    def reserve_floor(self) -> float:
         """Montant en stablecoin qui ne doit jamais être entamé."""
-        return self.config.min_reserve_pct * self.starting_capital_eur
+        return self.config.min_reserve_pct * self.starting_capital
 
-    def check_order(self, proposed_amount_eur: float, current_stable_balance_eur: float) -> tuple[bool, str]:
+    def check_order(self, proposed_amount: float, current_stable_balance: float) -> tuple[bool, str]:
         """
         Retourne (autorisé: bool, raison: str).
         Toute stratégie doit vérifier `autorisé` avant d'envoyer l'ordre.
@@ -107,17 +109,17 @@ class RiskGuard:
         if self.state["circuit_breaker_active"]:
             return False, "Coupure hebdomadaire active : perte limite atteinte, aucun ordre tant que non levée manuellement."
 
-        if proposed_amount_eur > self.max_order_size_eur():
+        if proposed_amount > self.max_order_size():
             return False, (
-                f"Ordre refusé : {proposed_amount_eur:.2f} € dépasse le maximum "
-                f"autorisé par trade ({self.max_order_size_eur():.2f} €)."
+                f"Ordre refusé : {proposed_amount:.2f} dépasse le maximum "
+                f"autorisé par trade ({self.max_order_size():.2f})."
             )
 
-        remaining_after = current_stable_balance_eur - proposed_amount_eur
-        if remaining_after < self.reserve_floor_eur():
+        remaining_after = current_stable_balance - proposed_amount
+        if remaining_after < self.reserve_floor():
             return False, (
                 f"Ordre refusé : entamerait la réserve de sécurité "
-                f"({self.reserve_floor_eur():.2f} € minimum en stablecoin)."
+                f"({self.reserve_floor():.2f} minimum en stablecoin)."
             )
 
         return True, "OK"

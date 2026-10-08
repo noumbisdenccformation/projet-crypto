@@ -29,15 +29,15 @@ from risk_guard import RiskGuard, RiskConfig
 # Configuration de la stratégie — À AJUSTER avant tout lancement
 # ----------------------------------------------------------------------
 
-SYMBOLS = ["BTCEUR", "ETHEUR", "SOLEUR", "BNBEUR"]  # répartition égale entre ces 4
-BASE_AMOUNT_EUR = 5.0          # montant de base par actif, par semaine
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]  # répartition égale entre ces 4
+BASE_AMOUNT_USDT = 5.0         # montant de base par actif, par semaine
 LOOKBACK_DAYS = 7              # période de comparaison pour mesurer la variation
 DROP_THRESHOLD_PCT = -0.08     # si le prix a baissé de 8%+ -> on renforce
 RISE_THRESHOLD_PCT = 0.08      # si le prix a monté de 8%+ -> on réduit
 MULTIPLIER_ON_DROP = 1.5       # achète 1.5x le montant de base si forte baisse
 MULTIPLIER_ON_RISE = 0.5       # achète 0.5x le montant de base si forte hausse
 
-STARTING_CAPITAL_EUR = 50.0
+STARTING_CAPITAL_USDT = 50.0
 
 logging.basicConfig(
     filename="dca_bot.log",
@@ -57,10 +57,11 @@ class DcaRenforceBot:
                 "en variables d'environnement (jamais dans le code)."
             )
 
-        self.client = Client(api_key, api_secret)
+        use_testnet = os.environ.get("BINANCE_TESTNET", "true").lower() == "true"
+        self.client = Client(api_key, api_secret, testnet=use_testnet)
         self.risk = RiskGuard(
             config=RiskConfig(state_path="dca_risk_state.json"),
-            starting_capital_eur=STARTING_CAPITAL_EUR,
+            starting_capital=STARTING_CAPITAL_USDT,
         )
 
     def get_current_price(self, symbol: str) -> float:
@@ -73,8 +74,8 @@ class DcaRenforceBot:
         )
         return float(klines[0][1])  # prix d'ouverture il y a `days` jours
 
-    def get_stable_balance_eur(self) -> float:
-        balance = self.client.get_asset_balance(asset="EUR")
+    def get_stable_balance(self) -> float:
+        balance = self.client.get_asset_balance(asset="USDT")
         return float(balance["free"]) if balance else 0.0
 
     def compute_amount(self, symbol: str) -> float:
@@ -92,34 +93,34 @@ class DcaRenforceBot:
             multiplier = 1.0
             logger.info(f"{symbol} : variation de {variation_pct:.1%} -> montant de base")
 
-        return BASE_AMOUNT_EUR * multiplier
+        return BASE_AMOUNT_USDT * multiplier
 
     def run_weekly_purchase(self):
-        stable_balance = self.get_stable_balance_eur()
-        logger.info(f"Solde EUR disponible avant achats : {stable_balance:.2f} €")
+        stable_balance = self.get_stable_balance()
+        logger.info(f"Solde USDT disponible avant achats : {stable_balance:.2f}")
 
         for symbol in SYMBOLS:
             try:
-                amount_eur = self.compute_amount(symbol)
+                amount = self.compute_amount(symbol)
             except Exception as e:
                 logger.error(f"Erreur de calcul pour {symbol} : {e}")
                 continue
 
-            allowed, reason = self.risk.check_order(amount_eur, stable_balance)
+            allowed, reason = self.risk.check_order(amount, stable_balance)
             if not allowed:
                 logger.warning(f"Achat {symbol} refusé : {reason}")
                 continue
 
             price = self.get_current_price(symbol)
-            quantity = round(amount_eur / price, 6)
+            quantity = round(amount / price, 6)
 
             if self.risk.config.dry_run:
-                logger.info(f"[SIMULATION] Achat {quantity} {symbol} (~{amount_eur:.2f} €) au prix {price}")
+                logger.info(f"[SIMULATION] Achat {quantity} {symbol} (~{amount:.2f} USDT) au prix {price}")
             else:
-                order = self.client.order_market_buy(symbol=symbol, quoteOrderQty=amount_eur)
+                order = self.client.order_market_buy(symbol=symbol, quoteOrderQty=amount)
                 logger.info(f"Ordre d'achat réel envoyé : {order}")
 
-            stable_balance -= amount_eur
+            stable_balance -= amount
 
 
 if __name__ == "__main__":

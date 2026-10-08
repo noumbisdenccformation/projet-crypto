@@ -1,13 +1,17 @@
 """
 grid_trading_bot.py
 ====================
-Bot de grid trading : place des ordres d'achat/vente échelonnés sur une
-fourchette de prix et profite des oscillations du marché, sans parier sur
-une direction (hausse ou baisse).
+Bot de grid trading multi-actifs (BTC, ETH, SOL, BNB contre USDT) : place
+des ordres d'achat/vente échelonnés sur une fourchette de prix centrée sur
+le prix courant de chaque actif, et profite des oscillations du marché,
+sans parier sur une direction (hausse ou baisse).
 
-À DÉPLOYER SUR TON PROPRE SERVEUR (VPS), PAS SUR CETTE MACHINE.
-Ce script ne s'exécute pas ici — il est écrit pour que tu le copies sur un
-VPS à toi (voir README_DEPLOIEMENT.md).
+ADAPTÉ POUR GITHUB ACTIONS : ce script s'exécute UNE FOIS par appel, puis
+s'arrête — pas de boucle infinie. Le workflow .github/workflows/grid_bot.yml
+le relance toutes les 15 minutes. L'état (grille de chaque actif, positions
+ouvertes, P&L de la semaine) est sauvegardé dans des fichiers JSON
+(grid_state.json, grid_risk_state.json) que le workflow committe dans le
+dépôt après chaque exécution, pour qu'il survive d'un passage à l'autre.
 
 Prérequis :
     pip install python-binance
@@ -15,17 +19,16 @@ Prérequis :
 Variables d'environnement requises (jamais de clé en dur dans le code) :
     BINANCE_API_KEY
     BINANCE_API_SECRET
+    BINANCE_TESTNET=true   -> utilise le testnet Binance (recommandé au début)
 
 Sécurité de la clé API (à faire sur binance.com AVANT de lancer le bot) :
     - Droits activés : "Enable Spot & Margin Trading" uniquement
     - Droits désactivés : "Enable Withdrawals" (retrait) — TOUJOURS désactivé
-    - Restriction IP : uniquement l'IP de ton VPS
 """
 
 import os
-import time
+import json
 import logging
-from datetime import datetime
 
 from binance.client import Client  # pip install python-binance
 
@@ -35,13 +38,19 @@ from risk_guard import RiskGuard, RiskConfig
 # Configuration de la stratégie — À AJUSTER avant tout lancement
 # ----------------------------------------------------------------------
 
-SYMBOL = "BTCEUR"          # paire tradée
-PRICE_LOW = 55000.0        # borne basse de la fourchette
-PRICE_HIGH = 65000.0       # borne haute de la fourchette
-GRID_LEVELS = 8            # nombre de paliers entre les deux bornes
-POLL_INTERVAL_SECONDS = 60 # fréquence de vérification du marché
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 
-STARTING_CAPITAL_EUR = 50.0  # capital total que TU as décidé d'allouer à ce bot
+# La grille est centrée sur le prix courant de chaque actif (pas besoin de
+# connaître les prix à l'avance) et recalculée si le prix s'en éloigne trop.
+GRID_WIDTH_PCT = 0.10          # la grille couvre ±10 % autour du prix de référence
+GRID_LEVELS = 6                # nombre de paliers d'achat ET de paliers de vente
+REBALANCE_OUTSIDE_PCT = 0.15   # si le prix sort de ±15 % du centre, on recentre la grille
+TOUCH_TOLERANCE_PCT = 0.003    # tolérance pour considérer qu'un palier est "touché"
+
+STARTING_CAPITAL_USDT = 150.0  # capital total alloué à ce bot, réparti sur les 4 actifs
+
+STATE_PATH = "grid_state.json"
+RISK_STATE_PATH = "grid_risk_state.json"
 
 logging.basicConfig(
     filename="grid_bot.log",
@@ -51,9 +60,12 @@ logging.basicConfig(
 logger = logging.getLogger("grid_bot")
 
 
-def build_grid(low: float, high: float, levels: int) -> list[float]:
+def build_grid(center: float, width_pct: float, levels: int) -> list[float]:
+    """Construit une grille de `levels + 1` prix, centrée sur `center`."""
+    low = center * (1 - width_pct)
+    high = center * (1 + width_pct)
     step = (high - low) / levels
-    return [round(low + i * step, 2) for i in range(levels + 1)]
+    return [round(low + i * step, 6) for i in range(levels + 1)]
 
 
 class GridTradingBot:
@@ -65,82 +77,130 @@ class GridTradingBot:
                 "Clés API manquantes. Définis BINANCE_API_KEY et BINANCE_API_SECRET "
                 "en variables d'environnement (jamais dans le code)."
             )
+        use_testnet = os.environ.get("BINANCE_TESTNET", "true").lower() == "true"
+        self.client = Client(api_key, api_secret, testnet=use_testnet)
+        logger.info(f"Client Binance initialisé (testnet={use_testnet}).")
 
-        self.client = Client(api_key, api_secret)
         self.risk = RiskGuard(
-            config=RiskConfig(state_path="grid_risk_state.json"),
-            starting_capital_eur=STARTING_CAPITAL_EUR,
+            config=RiskConfig(state_path=RISK_STATE_PATH),
+            starting_capital=STARTING_CAPITAL_USDT,
         )
-        self.grid = build_grid(PRICE_LOW, PRICE_HIGH, GRID_LEVELS)
-        self.open_buy_levels = set(self.grid[:-1])  # niveaux où on peut encore acheter
-        logger.info(f"Bot initialisé. Grille : {self.grid}")
+        self.state = self._load_state()
 
-    def get_current_price(self) -> float:
-        ticker = self.client.get_symbol_ticker(symbol=SYMBOL)
+    # ---- Persistance de l'état des grilles (positions ouvertes par actif) ----
+
+    def _load_state(self) -> dict:
+        if os.path.exists(STATE_PATH):
+            with open(STATE_PATH) as f:
+                return json.load(f)
+        return {symbol: {"center": None, "grid": [], "positions": {}} for symbol in SYMBOLS}
+
+    def _save_state(self):
+        with open(STATE_PATH, "w") as f:
+            json.dump(self.state, f, indent=2)
+
+    # ---- Accès marché / solde ----
+
+    def get_current_price(self, symbol: str) -> float:
+        ticker = self.client.get_symbol_ticker(symbol=symbol)
         return float(ticker["price"])
 
-    def get_stable_balance_eur(self) -> float:
-        """Solde disponible en stablecoin (à adapter selon ta devise de base)."""
-        balance = self.client.get_asset_balance(asset="EUR")
+    def get_quote_balance(self) -> float:
+        """Solde disponible en USDT (réserve commune aux 4 actifs)."""
+        balance = self.client.get_asset_balance(asset="USDT")
         return float(balance["free"]) if balance else 0.0
 
-    def place_buy(self, level_price: float):
-        amount_eur = self.risk.max_order_size_eur()
-        stable_balance = self.get_stable_balance_eur()
+    # ---- Gestion de la grille ----
 
-        allowed, reason = self.risk.check_order(amount_eur, stable_balance)
-        if not allowed:
-            logger.warning(f"Achat refusé au niveau {level_price} : {reason}")
-            return
+    def ensure_grid(self, symbol: str, price: float):
+        sym_state = self.state[symbol]
+        center = sym_state.get("center")
+        if center is None or abs(price - center) / center > REBALANCE_OUTSIDE_PCT:
+            sym_state["center"] = price
+            sym_state["grid"] = build_grid(price, GRID_WIDTH_PCT, GRID_LEVELS)
+            logger.info(f"{symbol} : grille (re)centrée sur {price} -> {sym_state['grid']}")
 
-        quantity = round(amount_eur / level_price, 6)
+    def step_pct(self) -> float:
+        """Écart en % entre deux paliers consécutifs de la grille."""
+        return (2 * GRID_WIDTH_PCT) / GRID_LEVELS
 
-        if self.risk.config.dry_run:
-            logger.info(f"[SIMULATION] Achat {quantity} {SYMBOL} au niveau {level_price} (~{amount_eur:.2f} €)")
-        else:
-            order = self.client.order_limit_buy(
-                symbol=SYMBOL,
-                quantity=quantity,
-                price=str(level_price),
-            )
-            logger.info(f"Ordre d'achat réel envoyé : {order}")
+    # ---- Un passage pour un actif donné ----
 
-        self.open_buy_levels.discard(level_price)
+    def process_symbol(self, symbol: str, quote_balance: float) -> float:
+        try:
+            price = self.get_current_price(symbol)
+        except Exception as e:
+            logger.error(f"{symbol} : erreur de récupération du prix : {e}")
+            return quote_balance
 
-    def place_sell(self, level_price: float, quantity: float, buy_price: float):
-        if self.risk.config.dry_run:
-            pnl = (level_price - buy_price) * quantity
-            logger.info(f"[SIMULATION] Vente {quantity} {SYMBOL} au niveau {level_price} (P&L estimé : {pnl:.2f} €)")
-            self.risk.record_trade_result(pnl)
-        else:
-            order = self.client.order_limit_sell(
-                symbol=SYMBOL,
-                quantity=quantity,
-                price=str(level_price),
-            )
-            logger.info(f"Ordre de vente réel envoyé : {order}")
+        self.ensure_grid(symbol, price)
+        sym_state = self.state[symbol]
+        grid = sym_state["grid"]
+        positions = sym_state["positions"]  # {"niveau_achat": {"qty":..., "buy_price":...}}
+
+        mid_index = len(grid) // 2
+        buy_levels = [lvl for lvl in grid[:mid_index]]
+
+        # --- Côté achat : le prix touche un palier d'achat libre ---
+        for level in sorted(buy_levels, reverse=True):
+            key = str(level)
+            if key in positions:
+                continue  # position déjà ouverte à ce palier
+            if abs(price - level) / level > TOUCH_TOLERANCE_PCT:
+                continue
+
+            amount = self.risk.max_order_size()
+            allowed, reason = self.risk.check_order(amount, quote_balance)
+            if not allowed:
+                logger.warning(f"{symbol} : achat refusé au niveau {level} : {reason}")
+                continue
+
+            quantity = round(amount / level, 6)
+            if self.risk.config.dry_run:
+                logger.info(f"[SIMULATION] {symbol} achat {quantity} au niveau {level} (~{amount:.2f} USDT)")
+            else:
+                order = self.client.order_limit_buy(symbol=symbol, quantity=quantity, price=str(level))
+                logger.info(f"{symbol} : ordre d'achat réel envoyé : {order}")
+
+            positions[key] = {"qty": quantity, "buy_price": level}
+            quote_balance -= amount
+            self._save_state()
+
+        # --- Côté vente : le prix a atteint le palier au-dessus du prix d'achat ---
+        for buy_level_key in list(positions.keys()):
+            pos = positions[buy_level_key]
+            target_sell = pos["buy_price"] * (1 + self.step_pct())
+            if price < target_sell:
+                continue
+
+            qty = pos["qty"]
+            if self.risk.config.dry_run:
+                pnl = (price - pos["buy_price"]) * qty
+                logger.info(
+                    f"[SIMULATION] {symbol} vente {qty} (achetée à {pos['buy_price']}) "
+                    f"au prix {price:.2f} -> P&L estimé : {pnl:.2f} USDT"
+                )
+                self.risk.record_trade_result(pnl)
+            else:
+                order = self.client.order_limit_sell(symbol=symbol, quantity=qty, price=str(round(price, 2)))
+                logger.info(f"{symbol} : ordre de vente réel envoyé : {order}")
+                # P&L réel calculé une fois l'ordre exécuté (laissé au suivi manuel
+                # ou à une étape ultérieure qui lit l'historique des ordres).
+
+            del positions[buy_level_key]
+            self._save_state()
+
+        return quote_balance
 
     def run_once(self):
-        try:
-            price = self.get_current_price()
-        except Exception as e:
-            logger.error(f"Erreur de récupération du prix : {e}")
-            return
+        logger.info("--- Passage du bot grid trading ---")
+        quote_balance = self.get_quote_balance()
+        logger.info(f"Solde USDT disponible : {quote_balance:.2f}")
 
-        logger.info(f"Prix actuel {SYMBOL} : {price}")
-
-        # Achète si le prix touche un niveau de grille encore disponible
-        for level in sorted(self.open_buy_levels):
-            if abs(price - level) / level < 0.002:  # tolérance 0.2%
-                self.place_buy(level)
-
-    def run_forever(self):
-        logger.info("Démarrage du bot de grid trading (Ctrl+C pour arrêter).")
-        while True:
-            self.run_once()
-            time.sleep(POLL_INTERVAL_SECONDS)
+        for symbol in SYMBOLS:
+            quote_balance = self.process_symbol(symbol, quote_balance)
 
 
 if __name__ == "__main__":
     bot = GridTradingBot()
-    bot.run_forever()
+    bot.run_once()
