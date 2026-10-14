@@ -199,6 +199,8 @@ class GridTradingBot:
 
         for symbol in SYMBOLS:
             quote_balance = self.process_symbol(symbol, quote_balance)
+        self._save_state()
+        logger.info("État des grilles sauvegardé.")
 
 
 if __name__ == "__main__":
