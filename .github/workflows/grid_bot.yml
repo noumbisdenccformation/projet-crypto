@@ -2,50 +2,27 @@ name: Grid trading bot
 
 on:
   schedule:
-    # Toutes les 15 minutes (UTC). GitHub peut retarder légèrement un run.
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {}  # permet aussi un lancement manuel depuis l'onglet Actions
-
-permissions:
-  contents: write  # nécessaire pour committer les fichiers d'état mis à jour
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 concurrency:
-  group: grid-bot
-  cancel-in-progress: false  # ne jamais interrompre un run en cours d'écriture d'état
+  group: bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
-    # Exécuté sur TA machine (runner auto-hébergé), pas sur le cloud de GitHub :
-    # Binance bloque les adresses IP des datacenters cloud (AWS/Azure/GCP),
-    # y compris celles utilisées par les runners gratuits de GitHub.
     runs-on: self-hosted
+    timeout-minutes: 5
     steps:
-      - name: Checkout du dépôt
-        uses: actions/checkout@v4
+      - name: Mettre à jour le code (si internet le permet)
+        run: |
+          cd ~/projet-crypto
+          timeout 60 git pull https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/noumbisdenccformation/projet-crypto.git main \
+            || echo "Mise à jour impossible, on garde la version locale"
 
-      - name: Installer Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Installer les dépendances
-        run: pip install python-binance
-
-      - name: Exécuter le bot (une passe)
+      - name: Lancer le bot
+        working-directory: /home/utente/projet-crypto
         env:
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
-          BINANCE_TESTNET: "true"  # repasser à "false" seulement après validation en testnet
-        run: python grid_trading_bot.py
-
-      - name: Committer l'état mis à jour (s'il a changé)
-        run: |
-          git config user.name "grid-bot"
-          git config user.email "grid-bot@users.noreply.github.com"
-          git add grid_state.json grid_risk_state.json 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Mise à jour automatique de l'état du bot grid"
-            git push
-          else
-            echo "Aucun changement d'état à committer."
-          fi
+        run: .venv/bin/python grid_trading_bot.py
